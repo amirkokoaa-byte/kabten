@@ -9,5 +9,6 @@ export interface TripState {
 export interface DailyStats {
   totalDistance: number;
   totalTrips: number;
+  totalWorkDistance: number; // إجمالي المسافة المقطوعة أثناء العمل
   lastResetDate: string; // YYYY-MM-DD
 }

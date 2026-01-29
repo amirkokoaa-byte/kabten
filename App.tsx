@@ -14,7 +14,11 @@ import {
   Calendar,
   Layers,
   BarChart3,
-  AlertCircle
+  AlertCircle,
+  RefreshCw,
+  ExternalLink,
+  Power,
+  Activity
 } from 'lucide-react';
 import { TripState, DailyStats } from './types';
 import { 
@@ -26,9 +30,14 @@ import {
 
 const App: React.FC = () => {
   const [geoError, setGeoError] = useState<string | null>(null);
-  const [isHttps, setIsHttps] = useState(true);
+  const [isSecure, setIsSecure] = useState(true);
 
-  // State for Automatic GPS Tracking
+  // حالة "بداية العمل" (تتبع كل حركة)
+  const [isWorking, setIsWorking] = useState(false);
+  const [workDistance, setWorkDistance] = useState(0);
+  const lastWorkPosition = useRef<GeolocationCoordinates | null>(null);
+
+  // حالة الرحلة الفردية
   const [trip, setTrip] = useState<TripState>({
     isActive: false,
     distance: 0,
@@ -37,323 +46,349 @@ const App: React.FC = () => {
   });
 
   const [dailyStats, setDailyStats] = useState<DailyStats>(() => {
-    const saved = localStorage.getItem('uber_helper_daily_stats');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Only keep data if it's the same day
-      if (parsed.lastResetDate === getCurrentDateString()) {
-        return parsed;
+    try {
+      const saved = localStorage.getItem('uber_helper_daily_stats');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.lastResetDate === getCurrentDateString()) {
+          return {
+            ...parsed,
+            totalWorkDistance: parsed.totalWorkDistance || 0
+          };
+        }
       }
+    } catch (e) {
+      console.error("Error reading from localStorage", e);
     }
-    return { totalDistance: 0, totalTrips: 0, lastResetDate: getCurrentDateString() };
+    return { totalDistance: 0, totalTrips: 0, totalWorkDistance: 0, lastResetDate: getCurrentDateString() };
   });
 
-  // State for Manual Input Calculation
   const [manualKm, setManualKm] = useState<string>('0');
   const [ratePerKm, setRatePerKm] = useState<number>(8);
   const [manualTotal, setManualTotal] = useState<number>(0);
 
   const watchId = useRef<number | null>(null);
 
-  // Check for HTTPS (Required for Geolocation on GitHub Pages)
   useEffect(() => {
-    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-      setIsHttps(false);
+    if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      setIsSecure(false);
     }
   }, []);
 
-  // Persistence
   useEffect(() => {
     localStorage.setItem('uber_helper_daily_stats', JSON.stringify(dailyStats));
   }, [dailyStats]);
 
-  // Reset Logic
   useEffect(() => {
     const interval = setInterval(() => {
       const today = getCurrentDateString();
       if (dailyStats.lastResetDate !== today) {
-        setDailyStats({ totalDistance: 0, totalTrips: 0, lastResetDate: today });
+        setDailyStats({ totalDistance: 0, totalTrips: 0, totalWorkDistance: 0, lastResetDate: today });
       }
     }, 10000); 
     return () => clearInterval(interval);
   }, [dailyStats.lastResetDate]);
 
-  // Manual Calculation Update
   useEffect(() => {
     const km = parseFloat(manualKm) || 0;
     setManualTotal(km * ratePerKm);
   }, [manualKm, ratePerKm]);
 
-  // Handle GPS Position Updates
+  // تحديث الموقع لكل من العمل والرحلة
   const handlePositionUpdate = useCallback((position: GeolocationPosition) => {
     setGeoError(null);
+    const { latitude, longitude } = position.coords;
+
+    // تتبع العمل الكلي (كل حركة)
+    if (isWorking) {
+      if (lastWorkPosition.current) {
+        const dist = calculateDistance(
+          lastWorkPosition.current.latitude,
+          lastWorkPosition.current.longitude,
+          latitude,
+          longitude
+        );
+        if (dist > 0.005) {
+          setWorkDistance(prev => prev + dist);
+          setDailyStats(prev => ({
+            ...prev,
+            totalWorkDistance: prev.totalWorkDistance + dist
+          }));
+        }
+      }
+      lastWorkPosition.current = position.coords;
+    }
+
+    // تتبع الرحلة الفردية
     setTrip((prev) => {
       if (!prev.isActive) return prev;
-      
       let newDistance = prev.distance;
       if (prev.lastPosition) {
         const addedDistance = calculateDistance(
           prev.lastPosition.latitude,
           prev.lastPosition.longitude,
-          position.coords.latitude,
-          position.coords.longitude
+          latitude,
+          longitude
         );
-        
-        // Filter out GPS noise (only add if moved more than 5 meters)
         if (addedDistance > 0.005) {
           newDistance += addedDistance;
         }
       }
-
-      return {
-        ...prev,
-        distance: newDistance,
-        lastPosition: position.coords,
-      };
+      return { ...prev, distance: newDistance, lastPosition: position.coords };
     });
-  }, []);
+  }, [isWorking]);
 
   const handleGeoError = (error: GeolocationPositionError) => {
-    let msg = "حدث خطأ في تحديد الموقع";
-    switch(error.code) {
-      case error.PERMISSION_DENIED:
-        msg = "يرجى السماح بالوصول للموقع (GPS) ليعمل البرنامج بشكل صحيح";
-        break;
-      case error.POSITION_UNAVAILABLE:
-        msg = "معلومات الموقع غير متاحة حالياً";
-        break;
-      case error.TIMEOUT:
-        msg = "انتهت مهلة طلب الموقع";
-        break;
-    }
+    let msg = "خطأ في الـ GPS";
+    if (error.code === error.PERMISSION_DENIED) msg = "يرجى تفعيل إذن الموقع";
     setGeoError(msg);
-    if (trip.isActive) stopTrip();
+  };
+
+  const toggleWorkMode = () => {
+    if (!isWorking) {
+      if (!navigator.geolocation) {
+        setGeoError("الجهاز لا يدعم الموقع");
+        return;
+      }
+      setIsWorking(true);
+      lastWorkPosition.current = null;
+      
+      // إذا لم يكن التتبع يعمل بالفعل، نبدأه
+      if (!watchId.current) {
+        watchId.current = navigator.geolocation.watchPosition(
+          handlePositionUpdate,
+          handleGeoError,
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
+      }
+    } else {
+      setIsWorking(false);
+      lastWorkPosition.current = null;
+      // إذا كانت الرحلة متوقفة أيضاً، نوقف الـ GPS تماماً لتوفير البطارية
+      if (!trip.isActive && watchId.current) {
+        navigator.geolocation.clearWatch(watchId.current);
+        watchId.current = null;
+      }
+    }
   };
 
   const startTrip = () => {
-    if (!navigator.geolocation) {
-      setGeoError("متصفحك لا يدعم خاصية تحديد الموقع");
-      return;
+    setTrip({ isActive: true, distance: 0, startTime: Date.now(), lastPosition: null });
+    if (!watchId.current) {
+      watchId.current = navigator.geolocation.watchPosition(
+        handlePositionUpdate,
+        handleGeoError,
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+      );
     }
-
-    setTrip({
-      isActive: true,
-      distance: 0,
-      startTime: Date.now(),
-      lastPosition: null,
-    });
-
-    watchId.current = navigator.geolocation.watchPosition(
-      handlePositionUpdate,
-      handleGeoError,
-      { 
-        enableHighAccuracy: true, 
-        maximumAge: 0,
-        timeout: 10000 
-      }
-    );
   };
 
   const stopTrip = () => {
-    if (watchId.current !== null) {
-      navigator.geolocation.clearWatch(watchId.current);
-      watchId.current = null;
-    }
-
     setDailyStats(prev => ({
       ...prev,
       totalDistance: prev.totalDistance + trip.distance,
-      totalTrips: prev.totalTrips + (trip.distance > 0.01 ? 1 : 0) // Only count if moved
+      totalTrips: prev.totalTrips + (trip.distance > 0.01 ? 1 : 0)
     }));
-
     setTrip(prev => ({ ...prev, isActive: false }));
+    
+    // إذا كان وضع العمل متوقفاً، نوقف الـ GPS
+    if (!isWorking && watchId.current) {
+      navigator.geolocation.clearWatch(watchId.current);
+      watchId.current = null;
+    }
+  };
+
+  const switchToHttps = () => {
+    if (window.location.protocol !== 'https:') {
+      window.location.href = window.location.href.replace('http:', 'https:');
+    }
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-24">
+    <div className="min-h-screen bg-gray-50 pb-28">
       {/* Header */}
       <header className="bg-black text-white p-4 sticky top-0 z-50 shadow-lg flex justify-between items-center">
         <div className="flex items-center gap-2">
           <Car className="w-8 h-8 text-yellow-500" />
           <h1 className="text-xl font-bold">مساعد سواق أوبر</h1>
         </div>
-        <div className="text-sm bg-gray-800 px-3 py-1 rounded-full text-gray-300">
+        <div className="text-sm bg-gray-800 px-3 py-1 rounded-full text-gray-300 font-mono">
           {new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
         </div>
       </header>
 
-      <main className="max-w-md mx-auto p-4 space-y-6">
+      <main className="max-w-md mx-auto p-4 space-y-4">
         
-        {/* Connection Warnings */}
-        {!isHttps && (
-          <div className="bg-red-100 border-r-4 border-red-500 p-4 rounded-xl flex items-start gap-3">
-            <AlertCircle className="text-red-600 w-5 h-5 mt-0.5" />
-            <p className="text-red-700 text-sm">
-              البرنامج يحتاج رابط <strong>HTTPS</strong> ليعمل الـ GPS. يرجى التأكد من الرابط.
-            </p>
+        {/* Secure Warning */}
+        {!isSecure && (
+          <div className="bg-red-50 border border-red-200 p-4 rounded-2xl flex items-center justify-between">
+            <p className="text-red-700 text-xs font-bold">الـ GPS يحتاج HTTPS ليعمل</p>
+            <button onClick={switchToHttps} className="bg-red-600 text-white px-3 py-1 rounded-lg text-[10px] font-bold">تفعيل</button>
           </div>
         )}
 
-        {geoError && (
-          <div className="bg-amber-100 border-r-4 border-amber-500 p-4 rounded-xl flex items-start gap-3 animate-bounce">
-            <AlertCircle className="text-amber-600 w-5 h-5 mt-0.5" />
-            <p className="text-amber-700 text-sm font-bold">{geoError}</p>
+        {/* Work Mode Toggle (الطلب الجديد) */}
+        <section className={`rounded-3xl p-5 shadow-lg border-2 transition-all duration-300 ${isWorking ? 'bg-indigo-900 border-indigo-400 text-white' : 'bg-white border-gray-100 text-gray-800'}`}>
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center gap-2">
+              <div className={`p-2 rounded-xl ${isWorking ? 'bg-indigo-700' : 'bg-gray-100'}`}>
+                <Activity className={`w-5 h-5 ${isWorking ? 'text-indigo-200 animate-pulse' : 'text-gray-400'}`} />
+              </div>
+              <h3 className="font-black text-lg">وضع العمل الكلي</h3>
+            </div>
+            {isWorking && (
+              <span className="bg-green-500 text-[10px] px-2 py-1 rounded-full text-white font-black animate-bounce">مفعّل</span>
+            )}
           </div>
-        )}
-        
-        {/* Real-time Tracking Dashboard */}
+          
+          <div className="flex items-end justify-between mb-4">
+            <div>
+              <p className={`text-[10px] font-bold uppercase tracking-widest ${isWorking ? 'text-indigo-300' : 'text-gray-400'}`}>المسافة المقطوعة منذ البداية</p>
+              <h4 className="text-4xl font-black tabular-nums tracking-tighter">
+                {formatNumber(workDistance)} <span className="text-sm font-normal">كم</span>
+              </h4>
+            </div>
+            <button 
+              onClick={toggleWorkMode}
+              className={`flex items-center gap-2 px-6 py-3 rounded-2xl font-black transition-all active:scale-95 ${isWorking ? 'bg-red-500 hover:bg-red-600' : 'bg-black text-white'}`}
+            >
+              <Power className="w-4 h-4" />
+              {isWorking ? 'إيقاف العمل' : 'بداية العمل'}
+            </button>
+          </div>
+          <p className={`text-[9px] ${isWorking ? 'text-indigo-300' : 'text-gray-400'}`}>* هذا العداد يحسب كل تحركاتك سواء كنت في رحلة أو لا.</p>
+        </section>
+
+        {/* Trip Dashboard */}
         <section className="bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
-          <div className={`p-6 ${trip.isActive ? 'bg-green-50' : 'bg-gray-50'} transition-colors duration-500`}>
+          <div className={`p-6 ${trip.isActive ? 'bg-green-50' : 'bg-gray-50'}`}>
             <div className="flex justify-between items-start mb-4">
-              <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${trip.isActive ? 'bg-green-500 text-white animate-pulse' : 'bg-gray-400 text-white'}`}>
-                {trip.isActive ? 'رحلة نشطة' : 'متوقف'}
+              <span className={`px-3 py-1 rounded-full text-[10px] font-black ${trip.isActive ? 'bg-green-600 text-white' : 'bg-gray-400 text-white'}`}>
+                {trip.isActive ? 'رحلة راكب نشطة' : 'عداد الرحلة'}
               </span>
               <Navigation className={`w-6 h-6 ${trip.isActive ? 'text-green-500' : 'text-gray-400'}`} />
             </div>
             
             <div className="text-center mb-6">
-              <p className="text-gray-500 text-sm mb-1">المسافة المقطوعة حالياً</p>
-              <h2 className="text-6xl font-black text-gray-900 tabular-nums">
+              <p className="text-gray-500 text-sm mb-1">مسافة الرحلة الحالية</p>
+              <h2 className="text-6xl font-black text-gray-900 tabular-nums tracking-tighter">
                 {formatNumber(trip.distance)}
-                <span className="text-xl font-normal text-gray-400 mr-2">كم</span>
+                <span className="text-lg font-bold text-gray-400 mr-2">كم</span>
               </h2>
             </div>
 
             <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className="bg-white p-3 rounded-2xl border border-gray-100 shadow-sm text-center">
-                <p className="text-gray-400 text-xs mb-1">الأجرة الحالية</p>
-                <p className="text-xl font-bold text-black">{formatNumber(trip.distance * ratePerKm)} ج.م</p>
+              <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-center">
+                <p className="text-gray-400 text-[10px] mb-1 font-bold uppercase">أجرة الرحلة</p>
+                <p className="text-2xl font-black text-black">{formatNumber(trip.distance * ratePerKm)} <span className="text-xs">ج.م</span></p>
               </div>
-              <div className="bg-white p-3 rounded-2xl border border-gray-100 shadow-sm text-center">
-                <p className="text-gray-400 text-xs mb-1">سعر الكيلو</p>
-                <p className="text-xl font-bold text-black">{ratePerKm} ج.م</p>
+              <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-center">
+                <p className="text-gray-400 text-[10px] mb-1 font-bold uppercase">سعر الكيلو</p>
+                <p className="text-2xl font-black text-black">{ratePerKm}</p>
               </div>
             </div>
 
             {!trip.isActive ? (
               <button 
                 onClick={startTrip}
-                className="w-full bg-black hover:bg-gray-800 text-white py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg shadow-black/20"
+                className="w-full bg-black text-white py-4 rounded-2xl font-black text-lg flex items-center justify-center gap-3 transition-all active:scale-95"
               >
-                <Play className="fill-white" /> ابدأ الرحلة
+                <Play className="fill-white w-5 h-5" /> ابدأ الرحلة الحالية
               </button>
             ) : (
               <button 
                 onClick={stopTrip}
-                className="w-full bg-red-600 hover:bg-red-700 text-white py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg shadow-red-200"
+                className="w-full bg-red-600 text-white py-4 rounded-2xl font-black text-lg flex items-center justify-center gap-3 transition-all active:scale-95"
               >
-                <Square className="fill-white" /> إنهاء الرحلة
+                <Square className="fill-white w-5 h-5" /> إنهاء الرحلة
               </button>
             )}
           </div>
         </section>
 
-        {/* Statistics Section (Requested Format) */}
+        {/* Statistics Section */}
         <section className="bg-white rounded-3xl p-6 shadow-md border border-gray-100">
-          <div className="flex justify-between items-center mb-6 border-b pb-4">
+          <div className="flex justify-between items-center mb-6 border-b border-gray-50 pb-4">
             <div className="flex items-center gap-2">
-              <BarChart3 className="text-blue-600 w-6 h-6" />
-              <h3 className="font-bold text-gray-800 text-lg">إحصائيات اليوم</h3>
+              <BarChart3 className="text-blue-600 w-5 h-5" />
+              <h3 className="font-black text-gray-800 text-lg">إحصائيات اليوم</h3>
             </div>
-            <div className="bg-gray-50 px-3 py-1 rounded-lg text-sm font-bold text-gray-600 border border-gray-100">
+            <div className="bg-gray-100 px-3 py-1 rounded-lg text-[10px] font-black text-gray-500">
               {dailyStats.lastResetDate}
             </div>
           </div>
 
-          <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-500 flex items-center gap-2"><CreditCard className="w-4 h-4" /> إجمالي الأرباح</span>
-              <span className="text-2xl font-black text-green-600">{formatNumber(dailyStats.totalDistance * ratePerKm)} ج.م</span>
+          <div className="grid grid-cols-2 gap-y-6 gap-x-4">
+            <div className="space-y-1">
+              <span className="text-gray-400 text-[10px] font-black uppercase">إجمالي الأرباح</span>
+              <p className="text-xl font-black text-green-600">{formatNumber(dailyStats.totalDistance * ratePerKm)} ج.م</p>
             </div>
-
-            <div className="flex justify-between items-center">
-              <span className="text-gray-500 flex items-center gap-2"><Navigation className="w-4 h-4" /> إجمالي المسافة</span>
-              <span className="text-2xl font-black text-gray-900">{formatNumber(dailyStats.totalDistance)} كم</span>
+            <div className="space-y-1">
+              <span className="text-gray-400 text-[10px] font-black uppercase">إجمالي حركة العمل</span>
+              <p className="text-xl font-black text-indigo-600">{formatNumber(dailyStats.totalWorkDistance)} كم</p>
             </div>
-
-            <div className="flex justify-between items-center">
-              <span className="text-gray-500 flex items-center gap-2"><Layers className="w-4 h-4" /> عدد الرحلات</span>
-              <span className="text-2xl font-black text-blue-600">{dailyStats.totalTrips} رحلة</span>
+            <div className="space-y-1">
+              <span className="text-gray-400 text-[10px] font-black uppercase">مسافة الرحلات</span>
+              <p className="text-xl font-black text-gray-900">{formatNumber(dailyStats.totalDistance)} كم</p>
             </div>
-
-            <div className="flex justify-between items-center">
-              <span className="text-gray-500 flex items-center gap-2"><TrendingUp className="w-4 h-4" /> متوسط الدخل/كم</span>
-              <span className="text-2xl font-black text-purple-600">{ratePerKm} ج.م</span>
+            <div className="space-y-1">
+              <span className="text-gray-400 text-[10px] font-black uppercase">عدد الرحلات</span>
+              <p className="text-xl font-black text-blue-600">{dailyStats.totalTrips} رحلة</p>
             </div>
           </div>
 
-          <div className="mt-8 pt-4 border-t border-gray-50 text-center">
-            <p className="text-[11px] text-gray-400 font-bold leading-relaxed">
-              * سيتم تصفير العداد تلقائياً في تمام الساعة 11:59 مساءً
-            </p>
-          </div>
+          <p className="mt-6 text-[10px] text-gray-400 font-bold text-center italic bg-gray-50 p-2 rounded-xl">
+            * سيتم تصفير العداد تلقائياً في تمام الساعة 11:59 مساءً
+          </p>
         </section>
 
         {/* Manual Calculator */}
         <section className="bg-white rounded-3xl p-6 shadow-md border border-gray-100">
-          <div className="flex items-center gap-2 mb-6">
+          <div className="flex items-center gap-2 mb-4">
             <Calculator className="text-yellow-500 w-5 h-5" />
-            <h3 className="font-bold text-gray-800">حاسبة يدوية سريعة</h3>
+            <h3 className="font-black text-gray-800">حاسبة يدوية</h3>
           </div>
-          
-          <div className="space-y-4">
-            <div className="flex gap-4">
-              <div className="flex-1">
-                <label className="block text-xs text-gray-400 mb-1 mr-2">المسافة (كم)</label>
-                <input 
-                  type="number" 
-                  value={manualKm}
-                  onChange={(e) => setManualKm(e.target.value)}
-                  className="w-full bg-gray-50 border-0 p-4 rounded-xl text-lg font-bold focus:ring-2 focus:ring-black outline-none text-center"
-                  placeholder="0.00"
-                />
-              </div>
-              <div className="w-1/3">
-                <label className="block text-xs text-gray-400 mb-1 mr-2">سعر الكيلو</label>
-                <input 
-                  type="number" 
-                  value={ratePerKm}
-                  onChange={(e) => setRatePerKm(parseFloat(e.target.value) || 0)}
-                  className="w-full bg-gray-50 border-0 p-4 rounded-xl text-lg font-bold focus:ring-2 focus:ring-black outline-none text-center"
-                />
-              </div>
-            </div>
-
-            <div className="bg-yellow-50 p-6 rounded-2xl flex justify-between items-center border border-yellow-100">
-              <div>
-                <p className="text-yellow-700 text-sm font-bold">السعر الإجمالي</p>
-                <p className="text-xs text-yellow-600">بناءً على الكيلو متر</p>
-              </div>
-              <p className="text-3xl font-black text-yellow-900">{formatNumber(manualTotal)} <span className="text-sm font-normal">ج.م</span></p>
-            </div>
+          <div className="flex gap-2 mb-4">
+            <input 
+              type="number" value={manualKm} onChange={(e) => setManualKm(e.target.value)}
+              className="flex-1 bg-gray-50 p-4 rounded-xl text-lg font-black outline-none border-2 border-transparent focus:border-black" placeholder="المسافة"
+            />
+            <input 
+              type="number" value={ratePerKm} onChange={(e) => setRatePerKm(parseFloat(e.target.value) || 0)}
+              className="w-24 bg-gray-50 p-4 rounded-xl text-lg font-black outline-none border-2 border-transparent focus:border-black"
+            />
+          </div>
+          <div className="bg-yellow-50 p-4 rounded-2xl flex justify-between items-center">
+            <span className="font-black text-yellow-800">الإجمالي:</span>
+            <p className="text-2xl font-black text-yellow-900">{formatNumber(manualTotal)} ج.م</p>
           </div>
         </section>
 
       </main>
 
-      {/* Bottom Navbar for Mobile Feel */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-2 flex justify-around items-center z-50 h-20 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
+      {/* Bottom Navbar */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-2 flex justify-around items-center z-50 h-20 rounded-t-[32px] shadow-2xl">
         <button className="flex flex-col items-center p-2 text-black">
-          <MapPin className="w-6 h-6" />
-          <span className="text-[10px] mt-1 font-bold">الخريطة</span>
+          <MapPin className="w-5 h-5" />
+          <span className="text-[10px] font-black">الخريطة</span>
         </button>
         <button className="flex flex-col items-center p-2 text-gray-400">
-          <Calculator className="w-6 h-6" />
-          <span className="text-[10px] mt-1 font-bold">الحساب</span>
+          <Calculator className="w-5 h-5" />
+          <span className="text-[10px] font-black">الحساب</span>
         </button>
         <div 
-          onClick={() => !trip.isActive ? startTrip() : stopTrip()}
-          className={`w-14 h-14 ${trip.isActive ? 'bg-red-600' : 'bg-black'} rounded-full flex items-center justify-center -mt-10 shadow-2xl border-4 border-white cursor-pointer active:scale-90 transition-all duration-300`}
+          onClick={toggleWorkMode}
+          className={`w-16 h-16 ${isWorking ? 'bg-red-600' : 'bg-black'} rounded-full flex items-center justify-center -mt-12 shadow-2xl border-4 border-white cursor-pointer transition-all duration-300`}
         >
-          {trip.isActive ? <Square className="text-white w-6 h-6 fill-white" /> : <Car className="text-yellow-500 w-7 h-7" />}
+          <Power className="text-white w-8 h-8" />
         </div>
         <button className="flex flex-col items-center p-2 text-gray-400">
-          <CreditCard className="w-6 h-6" />
-          <span className="text-[10px] mt-1 font-bold">الأرباح</span>
+          <CreditCard className="w-5 h-5" />
+          <span className="text-[10px] font-black">الأرباح</span>
         </button>
         <button className="flex flex-col items-center p-2 text-gray-400">
-          <Settings className="w-6 h-6" />
-          <span className="text-[10px] mt-1 font-bold">الإعدادات</span>
+          <Settings className="w-5 h-5" />
+          <span className="text-[10px] font-black">الإعدادات</span>
         </button>
       </nav>
     </div>
