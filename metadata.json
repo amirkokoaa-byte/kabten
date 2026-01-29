@@ -1,0 +1,7 @@
+{
+  "name": "Uber Driver Helper - مساعد سواق أوبر",
+  "description": "تطبيق متكامل لمساعدة سائقي أوبر في تتبع المسافات وحساب الأرباح اليومية باستخدام الـ GPS بشكل تلقائي مع إمكانية الحساب اليدوي.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
