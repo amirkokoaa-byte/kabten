@@ -10,7 +10,11 @@ import {
   Settings, 
   TrendingUp,
   CreditCard,
-  Car
+  Car,
+  Calendar,
+  Layers,
+  BarChart3,
+  AlertCircle
 } from 'lucide-react';
 import { TripState, DailyStats } from './types';
 import { 
@@ -21,6 +25,9 @@ import {
 } from './utils';
 
 const App: React.FC = () => {
+  const [geoError, setGeoError] = useState<string | null>(null);
+  const [isHttps, setIsHttps] = useState(true);
+
   // State for Automatic GPS Tracking
   const [trip, setTrip] = useState<TripState>({
     isActive: false,
@@ -33,11 +40,12 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('uber_helper_daily_stats');
     if (saved) {
       const parsed = JSON.parse(saved);
+      // Only keep data if it's the same day
       if (parsed.lastResetDate === getCurrentDateString()) {
         return parsed;
       }
     }
-    return { totalDistance: 0, lastResetDate: getCurrentDateString() };
+    return { totalDistance: 0, totalTrips: 0, lastResetDate: getCurrentDateString() };
   });
 
   // State for Manual Input Calculation
@@ -47,19 +55,26 @@ const App: React.FC = () => {
 
   const watchId = useRef<number | null>(null);
 
+  // Check for HTTPS (Required for Geolocation on GitHub Pages)
+  useEffect(() => {
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+      setIsHttps(false);
+    }
+  }, []);
+
   // Persistence
   useEffect(() => {
     localStorage.setItem('uber_helper_daily_stats', JSON.stringify(dailyStats));
   }, [dailyStats]);
 
-  // Reset Logic at 11:59 PM
+  // Reset Logic
   useEffect(() => {
     const interval = setInterval(() => {
       const today = getCurrentDateString();
-      if (isTimeToReset() && dailyStats.lastResetDate !== today) {
-        setDailyStats({ totalDistance: 0, lastResetDate: today });
+      if (dailyStats.lastResetDate !== today) {
+        setDailyStats({ totalDistance: 0, totalTrips: 0, lastResetDate: today });
       }
-    }, 30000); // Check every 30 seconds
+    }, 10000); 
     return () => clearInterval(interval);
   }, [dailyStats.lastResetDate]);
 
@@ -71,6 +86,7 @@ const App: React.FC = () => {
 
   // Handle GPS Position Updates
   const handlePositionUpdate = useCallback((position: GeolocationPosition) => {
+    setGeoError(null);
     setTrip((prev) => {
       if (!prev.isActive) return prev;
       
@@ -82,7 +98,8 @@ const App: React.FC = () => {
           position.coords.latitude,
           position.coords.longitude
         );
-        // Minimum threshold to filter out GPS jitter
+        
+        // Filter out GPS noise (only add if moved more than 5 meters)
         if (addedDistance > 0.005) {
           newDistance += addedDistance;
         }
@@ -96,9 +113,26 @@ const App: React.FC = () => {
     });
   }, []);
 
+  const handleGeoError = (error: GeolocationPositionError) => {
+    let msg = "حدث خطأ في تحديد الموقع";
+    switch(error.code) {
+      case error.PERMISSION_DENIED:
+        msg = "يرجى السماح بالوصول للموقع (GPS) ليعمل البرنامج بشكل صحيح";
+        break;
+      case error.POSITION_UNAVAILABLE:
+        msg = "معلومات الموقع غير متاحة حالياً";
+        break;
+      case error.TIMEOUT:
+        msg = "انتهت مهلة طلب الموقع";
+        break;
+    }
+    setGeoError(msg);
+    if (trip.isActive) stopTrip();
+  };
+
   const startTrip = () => {
     if (!navigator.geolocation) {
-      alert('جهازك لا يدعم الـ GPS');
+      setGeoError("متصفحك لا يدعم خاصية تحديد الموقع");
       return;
     }
 
@@ -111,8 +145,12 @@ const App: React.FC = () => {
 
     watchId.current = navigator.geolocation.watchPosition(
       handlePositionUpdate,
-      (err) => console.error(err),
-      { enableHighAccuracy: true }
+      handleGeoError,
+      { 
+        enableHighAccuracy: true, 
+        maximumAge: 0,
+        timeout: 10000 
+      }
     );
   };
 
@@ -124,14 +162,15 @@ const App: React.FC = () => {
 
     setDailyStats(prev => ({
       ...prev,
-      totalDistance: prev.totalDistance + trip.distance
+      totalDistance: prev.totalDistance + trip.distance,
+      totalTrips: prev.totalTrips + (trip.distance > 0.01 ? 1 : 0) // Only count if moved
     }));
 
     setTrip(prev => ({ ...prev, isActive: false }));
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-12">
+    <div className="min-h-screen bg-gray-50 pb-24">
       {/* Header */}
       <header className="bg-black text-white p-4 sticky top-0 z-50 shadow-lg flex justify-between items-center">
         <div className="flex items-center gap-2">
@@ -144,6 +183,23 @@ const App: React.FC = () => {
       </header>
 
       <main className="max-w-md mx-auto p-4 space-y-6">
+        
+        {/* Connection Warnings */}
+        {!isHttps && (
+          <div className="bg-red-100 border-r-4 border-red-500 p-4 rounded-xl flex items-start gap-3">
+            <AlertCircle className="text-red-600 w-5 h-5 mt-0.5" />
+            <p className="text-red-700 text-sm">
+              البرنامج يحتاج رابط <strong>HTTPS</strong> ليعمل الـ GPS. يرجى التأكد من الرابط.
+            </p>
+          </div>
+        )}
+
+        {geoError && (
+          <div className="bg-amber-100 border-r-4 border-amber-500 p-4 rounded-xl flex items-start gap-3 animate-bounce">
+            <AlertCircle className="text-amber-600 w-5 h-5 mt-0.5" />
+            <p className="text-amber-700 text-sm font-bold">{geoError}</p>
+          </div>
+        )}
         
         {/* Real-time Tracking Dashboard */}
         <section className="bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
@@ -192,23 +248,45 @@ const App: React.FC = () => {
           </div>
         </section>
 
-        {/* Daily Summary */}
+        {/* Statistics Section (Requested Format) */}
         <section className="bg-white rounded-3xl p-6 shadow-md border border-gray-100">
-          <div className="flex items-center gap-2 mb-4">
-            <History className="text-blue-500 w-5 h-5" />
-            <h3 className="font-bold text-gray-800">إجمالي اليوم</h3>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-gray-400 text-sm">المسافة الكلية</p>
-              <p className="text-2xl font-black text-gray-900">{formatNumber(dailyStats.totalDistance)} كم</p>
+          <div className="flex justify-between items-center mb-6 border-b pb-4">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="text-blue-600 w-6 h-6" />
+              <h3 className="font-bold text-gray-800 text-lg">إحصائيات اليوم</h3>
             </div>
-            <div className="text-left border-r pr-4">
-              <p className="text-gray-400 text-sm">إجمالي الأرباح</p>
-              <p className="text-2xl font-black text-green-600">{formatNumber(dailyStats.totalDistance * ratePerKm)} ج.م</p>
+            <div className="bg-gray-50 px-3 py-1 rounded-lg text-sm font-bold text-gray-600 border border-gray-100">
+              {dailyStats.lastResetDate}
             </div>
           </div>
-          <p className="text-[10px] text-gray-400 mt-4 text-center">يتم تصفير العداد تلقائياً في الساعة 11:59 مساءً</p>
+
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-500 flex items-center gap-2"><CreditCard className="w-4 h-4" /> إجمالي الأرباح</span>
+              <span className="text-2xl font-black text-green-600">{formatNumber(dailyStats.totalDistance * ratePerKm)} ج.م</span>
+            </div>
+
+            <div className="flex justify-between items-center">
+              <span className="text-gray-500 flex items-center gap-2"><Navigation className="w-4 h-4" /> إجمالي المسافة</span>
+              <span className="text-2xl font-black text-gray-900">{formatNumber(dailyStats.totalDistance)} كم</span>
+            </div>
+
+            <div className="flex justify-between items-center">
+              <span className="text-gray-500 flex items-center gap-2"><Layers className="w-4 h-4" /> عدد الرحلات</span>
+              <span className="text-2xl font-black text-blue-600">{dailyStats.totalTrips} رحلة</span>
+            </div>
+
+            <div className="flex justify-between items-center">
+              <span className="text-gray-500 flex items-center gap-2"><TrendingUp className="w-4 h-4" /> متوسط الدخل/كم</span>
+              <span className="text-2xl font-black text-purple-600">{ratePerKm} ج.م</span>
+            </div>
+          </div>
+
+          <div className="mt-8 pt-4 border-t border-gray-50 text-center">
+            <p className="text-[11px] text-gray-400 font-bold leading-relaxed">
+              * سيتم تصفير العداد تلقائياً في تمام الساعة 11:59 مساءً
+            </p>
+          </div>
         </section>
 
         {/* Manual Calculator */}
@@ -251,24 +329,10 @@ const App: React.FC = () => {
           </div>
         </section>
 
-        {/* Extra Info Card */}
-        <section className="bg-indigo-600 rounded-3xl p-6 shadow-lg shadow-indigo-200 text-white flex items-center justify-between">
-           <div className="flex items-center gap-4">
-              <div className="bg-indigo-500 p-3 rounded-2xl">
-                <TrendingUp className="w-6 h-6" />
-              </div>
-              <div>
-                <p className="text-indigo-200 text-xs">معدل الربح المقدر</p>
-                <p className="text-lg font-bold">{formatNumber(ratePerKm)} ج.م / كم</p>
-              </div>
-           </div>
-           <Settings className="w-5 h-5 text-indigo-300 cursor-pointer opacity-50 hover:opacity-100 transition-opacity" />
-        </section>
-
       </main>
 
       {/* Bottom Navbar for Mobile Feel */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-2 flex justify-around items-center z-50">
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-2 flex justify-around items-center z-50 h-20 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
         <button className="flex flex-col items-center p-2 text-black">
           <MapPin className="w-6 h-6" />
           <span className="text-[10px] mt-1 font-bold">الخريطة</span>
@@ -277,8 +341,11 @@ const App: React.FC = () => {
           <Calculator className="w-6 h-6" />
           <span className="text-[10px] mt-1 font-bold">الحساب</span>
         </button>
-        <div className="w-12 h-12 bg-black rounded-full flex items-center justify-center -mt-8 shadow-xl border-4 border-gray-50">
-          <Car className="text-yellow-500 w-6 h-6" />
+        <div 
+          onClick={() => !trip.isActive ? startTrip() : stopTrip()}
+          className={`w-14 h-14 ${trip.isActive ? 'bg-red-600' : 'bg-black'} rounded-full flex items-center justify-center -mt-10 shadow-2xl border-4 border-white cursor-pointer active:scale-90 transition-all duration-300`}
+        >
+          {trip.isActive ? <Square className="text-white w-6 h-6 fill-white" /> : <Car className="text-yellow-500 w-7 h-7" />}
         </div>
         <button className="flex flex-col items-center p-2 text-gray-400">
           <CreditCard className="w-6 h-6" />

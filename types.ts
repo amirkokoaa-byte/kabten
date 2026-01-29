@@ -8,5 +8,6 @@ export interface TripState {
 
 export interface DailyStats {
   totalDistance: number;
+  totalTrips: number;
   lastResetDate: string; // YYYY-MM-DD
 }

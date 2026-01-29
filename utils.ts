@@ -19,11 +19,16 @@ export const formatNumber = (num: number): string => {
 };
 
 export const getCurrentDateString = (): string => {
-  return new Date().toISOString().split('T')[0];
+  // Returns date in YYYY-MM-DD format based on local time
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 export const isTimeToReset = (): boolean => {
   const now = new Date();
-  // Check if we are at 23:59 (11:59 PM)
-  return now.getHours() === 23 && now.getMinutes() === 59;
+  // We reset if it's 23:59 or later
+  return (now.getHours() === 23 && now.getMinutes() >= 59);
 };
