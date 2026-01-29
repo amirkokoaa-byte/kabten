@@ -15,7 +15,10 @@ import {
   Sun,
   Moon,
   TrendingUp,
-  History
+  History,
+  X,
+  Info,
+  Signal
 } from 'lucide-react';
 import { TripState, DailyStats } from './types';
 import { 
@@ -31,6 +34,13 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [geoError, setGeoError] = useState<string | null>(null);
   const [isSecure, setIsSecure] = useState(true);
+  
+  // إعدادات الزر العائم
+  const [isFabEnabled, setIsFabEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('uber_helper_fab_enabled');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+  const [isFabOpen, setIsFabOpen] = useState(false);
 
   // حالة "بداية العمل"
   const [isWorking, setIsWorking] = useState(false);
@@ -73,6 +83,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('uber_helper_daily_stats', JSON.stringify(dailyStats));
   }, [dailyStats]);
+
+  useEffect(() => {
+    localStorage.setItem('uber_helper_fab_enabled', JSON.stringify(isFabEnabled));
+  }, [isFabEnabled]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -158,7 +172,7 @@ const App: React.FC = () => {
   const inputClass = isDarkMode ? 'bg-zinc-950 border-zinc-800 text-white' : 'bg-gray-50 border-gray-200 text-black';
 
   return (
-    <div className={`min-h-screen ${themeClass} pb-32 transition-colors duration-300`}>
+    <div className={`min-h-screen ${themeClass} pb-32 transition-colors duration-300 relative overflow-x-hidden`}>
       {/* Header */}
       <header className={`${isDarkMode ? 'bg-zinc-900/80 border-zinc-800' : 'bg-white/80 border-gray-200'} backdrop-blur-md border-b p-5 sticky top-0 z-50 flex justify-between items-center`}>
         <div className="flex items-center gap-3">
@@ -172,7 +186,6 @@ const App: React.FC = () => {
           <button 
             onClick={() => setIsDarkMode(!isDarkMode)}
             className={`p-2 rounded-full border transition-all ${isDarkMode ? 'border-zinc-700 hover:bg-zinc-800 text-yellow-500' : 'border-gray-300 hover:bg-gray-100 text-gray-600'}`}
-            title="تبديل المظهر"
           >
             {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
@@ -374,10 +387,11 @@ const App: React.FC = () => {
               <div className="bg-blue-500/10 p-2 rounded-xl">
                 <Settings className="text-blue-500 w-5 h-5" />
               </div>
-              <h3 className="font-black text-xl">الإعدادات والتسعير</h3>
+              <h3 className="font-black text-xl">الإعدادات والتخصيص</h3>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-6">
+              {/* التسعيرة */}
               <div className="space-y-2">
                 <label className={`text-xs font-black uppercase mr-1 ${subTextClass}`}>سعر الكيلو الافتراضي (ج.م)</label>
                 <div className="flex gap-2">
@@ -389,9 +403,31 @@ const App: React.FC = () => {
                 </div>
               </div>
 
+              {/* زر المساعد العائم */}
+              <div className={`p-5 rounded-3xl border ${isDarkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-gray-50 border-gray-200'} flex justify-between items-center`}>
+                <div className="flex items-center gap-3">
+                   <div className="bg-yellow-500/10 p-2 rounded-xl">
+                     <Info className="w-5 h-5 text-yellow-500" />
+                   </div>
+                   <div>
+                     <p className="font-black text-sm">المساعد العائم</p>
+                     <p className={`text-[10px] font-bold ${subTextClass}`}>إظهار زر البيانات السريع</p>
+                   </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer" 
+                    checked={isFabEnabled}
+                    onChange={(e) => setIsFabEnabled(e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-yellow-500"></div>
+                </label>
+              </div>
+
               <div className="p-4 rounded-2xl border border-yellow-500/20 bg-yellow-500/5">
                 <p className="text-[11px] font-bold text-yellow-600 leading-relaxed text-right">
-                  * يتم استخدام هذا السعر لحساب "الأجرة المتوقعة" في عداد الرحلة والحاسبة السريعة.
+                  * الزر العائم يمنحك وصولاً سريعاً لبيانات الـ GPS الحالية وحالة الرحلة من أي شاشة.
                 </p>
               </div>
 
@@ -414,11 +450,72 @@ const App: React.FC = () => {
 
       </main>
 
+      {/* Floating Action Button (FAB) & Overlay Card */}
+      {isFabEnabled && (
+        <>
+          {/* Data Card Overlay */}
+          <div className={`fixed bottom-28 right-6 z-[100] w-64 transition-all duration-300 transform origin-bottom-right ${isFabOpen ? 'scale-100 opacity-100' : 'scale-0 opacity-0 pointer-events-none'}`}>
+            <div className={`${isDarkMode ? 'bg-zinc-900/95 border-zinc-700' : 'bg-white/95 border-gray-200'} backdrop-blur-xl border rounded-[2rem] p-5 shadow-2xl relative overflow-hidden`}>
+               {/* Close button inside card */}
+               <button 
+                onClick={() => setIsFabOpen(false)}
+                className="absolute top-4 left-4 p-1 rounded-full hover:bg-zinc-800/50 transition-colors"
+               >
+                 <X className="w-4 h-4 text-zinc-500" />
+               </button>
+
+               <div className="flex items-center gap-2 mb-4">
+                 <Signal className="w-4 h-4 text-green-500" />
+                 <h4 className="font-black text-xs uppercase tracking-widest text-zinc-400">بيانات حية</h4>
+               </div>
+
+               <div className="space-y-4">
+                 <div className="grid grid-cols-2 gap-2">
+                    <div className="p-3 bg-zinc-950/50 rounded-2xl border border-zinc-800/50">
+                       <p className="text-[8px] text-zinc-500 font-bold uppercase mb-1">الرحلة</p>
+                       <p className="text-sm font-black text-yellow-500">{formatNumber(trip.distance)} كم</p>
+                    </div>
+                    <div className="p-3 bg-zinc-950/50 rounded-2xl border border-zinc-800/50">
+                       <p className="text-[8px] text-zinc-500 font-bold uppercase mb-1">اليوم</p>
+                       <p className="text-sm font-black text-white">{formatNumber(dailyStats.totalWorkDistance)} كم</p>
+                    </div>
+                 </div>
+
+                 <div className="p-3 bg-zinc-950/50 rounded-2xl border border-zinc-800/50 space-y-2">
+                    <div className="flex justify-between items-center text-[10px]">
+                       <span className="text-zinc-500 font-bold">الموقع:</span>
+                       <span className="font-mono text-zinc-300">{trip.lastPosition?.latitude?.toFixed(4) || '---'}, {trip.lastPosition?.longitude?.toFixed(4) || '---'}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px]">
+                       <span className="text-zinc-500 font-bold">الحالة:</span>
+                       <span className={`font-bold ${trip.isActive ? 'text-green-500' : 'text-zinc-600'}`}>{trip.isActive ? 'رحلة نشطة' : 'في الانتظار'}</span>
+                    </div>
+                 </div>
+               </div>
+               
+               <div className="mt-4 flex justify-center">
+                  <div className={`px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-tighter ${isWorking ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                    {isWorking ? 'وضع العمل مفعل' : 'وضع العمل متوقف'}
+                  </div>
+               </div>
+            </div>
+          </div>
+
+          {/* Main FAB */}
+          <button 
+            onClick={() => setIsFabOpen(!isFabOpen)}
+            className={`fixed bottom-28 right-6 z-[101] w-14 h-14 rounded-full flex items-center justify-center shadow-2xl transition-all duration-300 hover:scale-110 active:scale-95 ${isFabOpen ? 'bg-zinc-800 text-white rotate-45' : 'bg-yellow-500 text-black shadow-yellow-500/20'}`}
+          >
+            {isFabOpen ? <X className="w-6 h-6" /> : <Info className="w-6 h-6" />}
+          </button>
+        </>
+      )}
+
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 z-[60] px-4 pb-6">
         <div className={`max-w-md mx-auto ${isDarkMode ? 'bg-zinc-900/90 backdrop-blur-xl border-zinc-800 shadow-2xl' : 'bg-white/95 border-gray-200 shadow-xl'} border h-20 rounded-[2rem] flex justify-around items-center`}>
           <button 
-            onClick={() => setActiveTab('map')}
+            onClick={() => { setActiveTab('map'); setIsFabOpen(false); }}
             className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'map' ? 'text-yellow-500' : subTextClass}`}
           >
             <MapPin className="w-5 h-5" />
@@ -426,7 +523,7 @@ const App: React.FC = () => {
           </button>
           
           <button 
-            onClick={() => setActiveTab('calculator')}
+            onClick={() => { setActiveTab('calculator'); setIsFabOpen(false); }}
             className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'calculator' ? 'text-yellow-500' : subTextClass}`}
           >
             <Calculator className="w-5 h-5" />
@@ -441,7 +538,7 @@ const App: React.FC = () => {
           </div>
 
           <button 
-            onClick={() => setActiveTab('profits')}
+            onClick={() => { setActiveTab('profits'); setIsFabOpen(false); }}
             className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'profits' ? 'text-yellow-500' : subTextClass}`}
           >
             <CreditCard className="w-5 h-5" />
@@ -449,7 +546,7 @@ const App: React.FC = () => {
           </button>
           
           <button 
-            onClick={() => setActiveTab('settings')}
+            onClick={() => { setActiveTab('settings'); setIsFabOpen(false); }}
             className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'settings' ? 'text-yellow-500' : subTextClass}`}
           >
             <Settings className="w-5 h-5" />
